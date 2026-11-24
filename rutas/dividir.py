@@ -1,7 +1,5 @@
 """
 dividir.py - Estrategia Divide et Impera para partición de la red vial.
-Responsable: Integrante A
-
 Divide la red en subredes independientes (sectores) y extrae las conexiones
 entre nodos frontera (ciudades puente) para reducir la complejidad global.
 """
