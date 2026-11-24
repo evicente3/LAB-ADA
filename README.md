@@ -35,18 +35,6 @@ LAB-ADA/
 
 ---
 
-## 👥 Repartición de Responsabilidades
-
-| Área | Integrante A | Integrante B |
-| :--- | :--- | :--- |
-| **Código** | `datos.py`, `dividir.py`, `dijkstra.py` | `floyd.py`, `ordenar.py`, `main.py` |
-| **Pruebas** | Casos de prueba calculados a mano (Dijkstra) | Floyd-Warshall, Mergesort y validación empírica ($T_{\text{híbrido}}$ vs $T_{\text{global}}$) |
-| **Informe** | Introducción, marco teórico y diseño | Implementación, análisis de pruebas, complejidad y gráficas |
-| **Cuestionario** | Preguntas 1, 3 (y 5 compartida) | Preguntas 2, 4 (y 5 compartida) |
-| **Exposición** | Descomposición en subredes y Dijkstra | Floyd-Warshall, Mergesort y análisis comparativo de tiempos |
-
----
-
 ## 💻 Ejecución
 
 ```bash
