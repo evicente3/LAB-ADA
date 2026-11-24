@@ -1,23 +1,30 @@
-import json
 import sys
-import threading
+import time
 from pathlib import Path
+from typing import Any, Dict, List
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import geopandas as gpd
+import matplotlib
 import tkinter as tk
 from tkinter import ttk
 
-from rutas.datos import RED_VIAL, obtener_ciudades
-from rutas.dijkstra import dijkstra
-from rutas.floyd import floyd_warshall
-from rutas.ordenar import mergeSort
-from rutas.requestPeru import OUTPUT_PATH, TARGET_REGIONS, descargar_regiones
+matplotlib.use("TkAgg")
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 
-ANCHO = 900
-ALTO = 620
-MARGEN = 45
+from rutas.datos import RED_VIAL, CIUDADES_PUENTE, obtener_ciudades
+from rutas.dividir import obtener_aristas_intersectoriales
+from rutas.dijkstra import dijkstra
+from rutas.floyd import (
+    floyd_warshall,
+    floyd_warshall_matriz,
+    reconstruir_camino_floyd,
+)
+from rutas.ordenar import mergeSort, mergesort_rutas
+from rutas.requestPeru import OUTPUT_PATH, descargar_regiones
 
 CIUDADES = {
     "Arequipa": (-71.5375, -16.4090),
@@ -43,8 +50,10 @@ class MapaRutasApp:
         self.root.title("Rutas turísticas del sur del Perú")
         self.root.geometry("1240x720")
 
-        self.geojson = None
-        self.proyectar = lambda lon, lat: (0, 0)
+        self.gdf = None
+        self.fig = Figure(figsize=(9, 6.2), dpi=100)
+        self.ax = self.fig.add_subplot(111)
+        self.lienzo = None
         self.arestas = {}
         self.orden_arestas = []
         self.ruta = []
@@ -115,8 +124,8 @@ class MapaRutasApp:
         cuerpo = ttk.Frame(self.root, padding=(10, 0, 10, 0))
         cuerpo.pack(side="top", fill="both", expand=True)
 
-        self.canvas = tk.Canvas(cuerpo, width=ANCHO, height=ALTO, bg="#fafafa")
-        self.canvas.pack(side="left", fill="both", expand=True)
+        self.lienzo = FigureCanvasTkAgg(self.fig, master=cuerpo)
+        self.lienzo.get_tk_widget().pack(side="left", fill="both", expand=True)
 
         panel = ttk.Frame(cuerpo, width=300)
         panel.pack(side="right", fill="y", padx=(10, 0))
@@ -139,30 +148,17 @@ class MapaRutasApp:
         )
 
     def _cargar_mapa(self):
-        if OUTPUT_PATH.exists():
-            self._leer_mapa()
+        if not OUTPUT_PATH.exists():
+            self.estado.set("No hay mapa descargado; revisa la conexión")
             return
-
-        self.estado.set("Descargando mapa desde geoboundaries.org...")
-        threading.Thread(target=self._descargar, daemon=True).start()
-
-    def _descargar(self):
-        try:
-            descargar_regiones()
-        except Exception as error:
-            self.root.after(
-                0, lambda: self.estado.set(f"No se pudo descargar el mapa: {error}")
-            )
-        else:
-            self.root.after(0, self._leer_mapa)
+        self._leer_mapa()
 
     def _leer_mapa(self):
         try:
-            with OUTPUT_PATH.open(encoding="utf-8") as archivo:
-                self.geojson = json.load(archivo)
-            cantidad = len(self.geojson.get("features", []))
-            self.estado.set(f"Mapa cargado: {cantidad} regiones")
-        except (OSError, ValueError) as error:
+            self.gdf = gpd.read_file(OUTPUT_PATH)
+            self.estado.set(f"Mapa GeoPandas: {len(self.gdf)} regiones")
+        except Exception as error:
+            self.gdf = None
             self.estado.set(f"No se pudo leer el mapa: {error}")
         self.dibujar()
 
@@ -226,110 +222,44 @@ class MapaRutasApp:
                 "end", f"{posicion:2}. {origen:<14} {destino:<14} {peso:>5.2f} h\n"
             )
 
-    def _iter_geometria(self):
-        if not self.geojson:
-            return
-        for caracteristica in self.geojson.get("features", []):
-            geometria = caracteristica.get("geometry") or {}
-            tipo = geometria.get("type")
-            coordenadas = geometria.get("coordinates") or []
-            if tipo == "Polygon":
-                anillos = coordenadas
-            elif tipo == "MultiPolygon":
-                anillos = [
-                    anillo for poligono in coordenadas for anillo in poligono
-                ]
-            else:
-                continue
-            yield caracteristica, anillos
-
-    def _nombre_region(self, caracteristica):
-        for valor in (caracteristica.get("properties") or {}).values():
-            nombre = str(valor).strip()
-            if nombre in TARGET_REGIONS:
-                return nombre
-        return ""
-
-    def _actualizar_proyeccion(self):
-        puntos = [(lon, lat) for lon, lat in CIUDADES.values()]
-        for _, anillos in self._iter_geometria():
-            for anillo in anillos:
-                puntos.extend(anillo)
-
-        if not puntos:
-            self.proyectar = lambda lon, lat: (0, 0)
-            return
-
-        longitudes = [lon for lon, _ in puntos]
-        latitudes = [lat for _, lat in puntos]
-        min_lon, max_lon = min(longitudes), max(longitudes)
-        min_lat, max_lat = min(latitudes), max(latitudes)
-        ancho = max_lon - min_lon or 1
-        alto = max_lat - min_lat or 1
-        escala = min(
-            (ANCHO - 2 * MARGEN) / ancho,
-            (ALTO - 2 * MARGEN) / alto,
-        )
-        desplazamiento_x = (ANCHO - ancho * escala) / 2 - min_lon * escala
-        desplazamiento_y = (ALTO - alto * escala) / 2 + min_lat * escala
-
-        def proyectar(lon, lat):
-            return (
-                desplazamiento_x + lon * escala,
-                ALTO - (desplazamiento_y + lat * escala),
-            )
-
-        self.proyectar = proyectar
-
     def dibujar(self):
-        self.canvas.delete("all")
-        self._actualizar_proyeccion()
-        self._dibujar_regiones()
+        self.ax.clear()
+        self.ax.set_facecolor("#fafafa")
+        self.fig.patch.set_facecolor("#fafafa")
+
+        if self.gdf is not None:
+            colores = [
+                COLORES_REGIONES[indice % len(COLORES_REGIONES)]
+                for indice in range(len(self.gdf))
+            ]
+            self.gdf.plot(
+                ax=self.ax,
+                color=colores,
+                edgecolor="#546e7a",
+                linewidth=0.8,
+                alpha=0.7,
+                zorder=1,
+            )
+            for _, fila in self.gdf.iterrows():
+                punto = fila.geometry.representative_point()
+                self.ax.text(
+                    punto.x,
+                    punto.y,
+                    fila["shapeName"],
+                    ha="center",
+                    fontsize=9,
+                    fontweight="bold",
+                    color="#37474f",
+                    zorder=2,
+                )
+
         self._dibujar_arestas()
         self._dibujar_ruta()
         self._dibujar_nodos()
-
-    def _dibujar_regiones(self):
-        for indice, (caracteristica, anillos) in enumerate(self._iter_geometria()):
-            if not anillos:
-                continue
-            color = COLORES_REGIONES[indice % len(COLORES_REGIONES)]
-            exterior = [
-                coordenada
-                for punto in anillos[0]
-                for coordenada in self.proyectar(punto[0], punto[1])
-            ]
-            if len(exterior) >= 6:
-                self.canvas.create_polygon(
-                    exterior, fill=color, outline="#78909c", width=1, tags="mapa"
-                )
-            for anillo in anillos[1:]:
-                hueco = [
-                    coordenada
-                    for punto in anillo
-                    for coordenada in self.proyectar(punto[0], punto[1])
-                ]
-                if len(hueco) >= 6:
-                    self.canvas.create_polygon(
-                        hueco, fill="#fafafa", outline="#78909c", width=1, tags="mapa"
-                    )
-
-            nombre = self._nombre_region(caracteristica)
-            if nombre:
-                longitudes = [punto[0] for punto in anillos[0]]
-                latitudes = [punto[1] for punto in anillos[0]]
-                x, y = self.proyectar(
-                    (min(longitudes) + max(longitudes)) / 2,
-                    (min(latitudes) + max(latitudes)) / 2,
-                )
-                self.canvas.create_text(
-                    x,
-                    y,
-                    text=nombre,
-                    fill="#37474f",
-                    font=("TkDefaultFont", 12, "bold"),
-                    tags="mapa",
-                )
+        self._ajustar_limits()
+        self.ax.set_axis_off()
+        self.fig.tight_layout()
+        self.lienzo.draw_idle()
 
     def _dibujar_arestas(self):
         total = max(1, len(self.orden_arestas) - 1)
@@ -340,63 +270,64 @@ class MapaRutasApp:
             verde = int(150 - 90 * proporcion)
             colores[tuple(sorted((origen, destino)))] = f"#{rojo:02x}{verde:02x}{40:02x}"
 
-        for (origen, destino), peso in self.arestas.items():
-            x1, y1 = self.proyectar(*CIUDADES[origen])
-            x2, y2 = self.proyectar(*CIUDADES[destino])
-            self.canvas.create_line(
-                x1, y1, x2, y2, fill=colores[(origen, destino)], width=2, tags="grafo"
+        for origen, destino in self.arestas:
+            self.ax.plot(
+                [CIUDADES[origen][0], CIUDADES[destino][0]],
+                [CIUDADES[origen][1], CIUDADES[destino][1]],
+                color=colores[(origen, destino)],
+                linewidth=1.8,
+                zorder=3,
             )
 
     def _dibujar_ruta(self):
         for origen, destino in zip(self.ruta, self.ruta[1:]):
-            x1, y1 = self.proyectar(*CIUDADES[origen])
-            x2, y2 = self.proyectar(*CIUDADES[destino])
-            self.canvas.create_line(
-                x1, y1, x2, y2, fill="#d32f2f", width=5, tags="ruta"
+            self.ax.plot(
+                [CIUDADES[origen][0], CIUDADES[destino][0]],
+                [CIUDADES[origen][1], CIUDADES[destino][1]],
+                color="#d32f2f",
+                linewidth=4,
+                zorder=4,
             )
 
     def _dibujar_nodos(self):
-        for ciudad, coordenadas in CIUDADES.items():
-            x, y = self.proyectar(*coordenadas)
+        for ciudad, (lon, lat) in CIUDADES.items():
             en_ruta = ciudad in self.ruta
             color = "#d32f2f" if en_ruta else "#1565c0"
-            radio = 6 if en_ruta else 4
-            self.canvas.create_oval(
-                x - radio,
-                y - radio,
-                x + radio,
-                y + radio,
-                fill=color,
-                outline="white",
-                width=1,
-                tags="nodo",
+            self.ax.scatter(
+                lon,
+                lat,
+                s=75 if en_ruta else 38,
+                color=color,
+                edgecolors="white",
+                linewidths=0.8,
+                zorder=5,
             )
-            self.canvas.create_text(
-                x + radio + 3,
-                y - radio - 2,
-                text=ciudad,
-                anchor="sw",
-                fill=color,
-                font=("TkDefaultFont", 9, "bold"),
-                tags="nodo",
+            self.ax.annotate(
+                ciudad,
+                (lon, lat),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=8,
+                fontweight="bold",
+                color=color,
+                zorder=6,
             )
 
+    def _ajustar_limits(self):
+        longitudes = [lon for lon, _ in CIUDADES.values()]
+        latitudes = [lat for _, lat in CIUDADES.values()]
+        if self.gdf is not None:
+            minx, miny, maxx, maxy = self.gdf.total_bounds
+            longitudes.extend([minx, maxx])
+            latitudes.extend([miny, maxy])
 
-"""
-main.py - Pipeline principal, benchmarking y validación comparativa.
-Responsable: Integrante B
-
-Ejecuta el pipeline híbrido (Divide + Dijkstra + Floyd-Warshall + Mergesort)
-y lo compara contra Floyd-Warshall aplicado a todo el grafo sin partición.
-"""
-
-import time
-from typing import List, Dict, Any
-from rutas.datos import RED_VIAL, CIUDADES_PUENTE, obtener_ciudades
-from rutas.dividir import obtener_aristas_intersectoriales
-from rutas.dijkstra import dijkstra
-from rutas.floyd import floyd_warshall_matriz, reconstruir_camino_floyd
-from rutas.ordenar import mergesort_rutas
+        min_lon, max_lon = min(longitudes), max(longitudes)
+        min_lat, max_lat = min(latitudes), max(latitudes)
+        margen_lon = (max_lon - min_lon or 1) * 0.08
+        margen_lat = (max_lat - min_lat or 1) * 0.08
+        self.ax.set_xlim(min_lon - margen_lon, max_lon + margen_lon)
+        self.ax.set_ylim(min_lat - margen_lat, max_lat + margen_lat)
+        self.ax.set_aspect("equal", adjustable="box")
 
 
 def ejecutar_pipeline_hibrido(origen: str, destino: str):
@@ -471,6 +402,13 @@ def main():
     print("  OPTIMIZADOR DE RUTAS TURÍSTICAS - SUR DEL PERÚ")
     print("  Enfoque Híbrido: Divide et Impera + Goloso + PD")
     print("=" * 60)
+
+    try:
+        descargar_regiones()
+    except Exception as error:
+        print(f"No se pudo descargar el mapa: {error}")
+        if not OUTPUT_PATH.exists():
+            print("No hay copia local del GeoJSON; el mapa se mostrará vacío.")
 
     origen = "Ilo"
     destino = "Ollantaytambo"

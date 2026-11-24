@@ -11,17 +11,33 @@ OUTPUT_PATH = Path(__file__).with_name("southern_peru_regions.geojson")
 
 
 def descargar_regiones(output_path=OUTPUT_PATH):
-    response = requests.get(API_URL, timeout=30)
-    response.raise_for_status()
-    metadata = response.json()
-    if isinstance(metadata, list):
-        metadata = metadata[0]
+    try:
+        response = requests.get(API_URL, timeout=30)
+        response.raise_for_status()
+        metadata = response.json()
+        print(metadata)
+        if isinstance(metadata, list):
+            metadata = metadata[0]
+
+    except requests.exceptions.HTTPError as errh:
+        print(f"HTTP Error: {errh}")
+    except requests.exceptions.ConnectionError as errc:
+        print(f"Connection Error: {errc}")
+    except requests.exceptions.Timeout as errt:
+        print(f"Timeout Error: {errt}")
+    except requests.exceptions.RequestException as err:
+        print(f"An error occurred: {err}")
+
+
 
     geojson_url = metadata["gjDownloadURL"]
+
 
     response = requests.get(geojson_url, timeout=120)
     response.raise_for_status()
     geojson = response.json()
+
+    print("El mapa es :", geojson)
 
     selected_features = []
     for feature in geojson.get("features", []):
@@ -49,11 +65,9 @@ def descargar_regiones(output_path=OUTPUT_PATH):
     with output_path.open("w", encoding="utf-8") as file:
         json.dump(output, file, ensure_ascii=False)
 
+    print(f"Saved {len(selected_features)} regions to {output_path}")
     return output_path
 
 
 if __name__ == "__main__":
-    ruta = descargar_regiones()
-    with ruta.open(encoding="utf-8") as archivo:
-        cantidad = len(json.load(archivo).get("features", []))
-    print(f"Saved {cantidad} regions to {ruta}")
+    descargar_regiones()
