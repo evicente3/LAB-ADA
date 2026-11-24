@@ -3,14 +3,17 @@
 import json
 from pathlib import Path
 
-import requests
-
 API_URL = "https://www.geoboundaries.org/api/current/gbOpen/PER/ADM1/"
 TARGET_REGIONS = {"Arequipa", "Moquegua", "Puno", "Cusco"}
 OUTPUT_PATH = Path(__file__).with_name("southern_peru_regions.geojson")
 
 
 def descargar_regiones(output_path=OUTPUT_PATH):
+    try:
+        import requests
+    except ImportError:
+        raise ImportError("La librería 'requests' no está instalada. Ejecuta: pip install requests")
+
     response = requests.get(API_URL, timeout=30)
     response.raise_for_status()
     metadata = response.json()
