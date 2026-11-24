@@ -1,6 +1,5 @@
 """
 test_dijkstra.py - Casos de prueba de Dijkstra calculados a mano.
-Responsable: Integrante A
 """
 
 from rutas.dijkstra import dijkstra
