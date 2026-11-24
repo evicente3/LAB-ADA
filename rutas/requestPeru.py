@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import requests
+
 API_URL = "https://www.geoboundaries.org/api/current/gbOpen/PER/ADM1/"
 TARGET_REGIONS = {"Arequipa", "Moquegua", "Puno", "Cusco"}
 OUTPUT_PATH = Path(__file__).with_name("southern_peru_regions.geojson")
@@ -13,7 +15,6 @@ def descargar_regiones(output_path=OUTPUT_PATH):
         response = requests.get(API_URL, timeout=30)
         response.raise_for_status()
         metadata = response.json()
-        print(metadata)
         if isinstance(metadata, list):
             metadata = metadata[0]
 
@@ -35,8 +36,6 @@ def descargar_regiones(output_path=OUTPUT_PATH):
     response = requests.get(geojson_url, timeout=120)
     response.raise_for_status()
     geojson = response.json()
-
-    print("El mapa es :", geojson)
 
     selected_features = []
     for feature in geojson.get("features", []):

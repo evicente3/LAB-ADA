@@ -15,8 +15,8 @@ matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-from rutas.datos import RED_VIAL, CIUDADES_PUENTE, obtener_ciudades
-from rutas.dividir import obtener_aristas_intersectoriales
+from rutas.datos import RED_VIAL, CIUDADES_PUENTE, SECTORES, obtener_ciudades
+from rutas.dividir import obtener_aristas_intersectoriales, obtener_subgrafo_sector
 from rutas.dijkstra import dijkstra
 from rutas.floyd import (
     floyd_warshall,
@@ -58,6 +58,7 @@ class MapaRutasApp:
         self.orden_arestas = []
         self.ruta = []
         self.costo = None
+        self.detalles = None
         self.algoritmo_usado = ""
         self.estado = tk.StringVar(value="Cargando mapa...")
 
@@ -97,9 +98,13 @@ class MapaRutasApp:
         ttk.Combobox(
             controles,
             textvariable=self.algoritmo,
-            values=("Dijkstra (local)", "Floyd-Warshall (global)"),
+            values=(
+                "Dijkstra (local)",
+                "Floyd-Warshall (global)",
+                "Híbrido (Merge+Dijkstra+Floyd)",
+            ),
             state="readonly",
-            width=24,
+            width=30,
         ).grid(row=0, column=5, padx=(4, 14))
 
         ttk.Button(controles, text="Calcular ruta", command=self.calcular).grid(
@@ -113,6 +118,7 @@ class MapaRutasApp:
                 ("Arequipa", "Ilo"),
                 ("Mollendo", "Moquegua"),
                 ("Arequipa", "Cusco"),
+                ("Ilo", "Ollantaytambo"),
             ]
         ):
             ttk.Button(
@@ -185,10 +191,15 @@ class MapaRutasApp:
         destino = self.destino.get()
         nombre = self.algoritmo.get()
 
+        self.detalles = None
         if nombre.startswith("Dijkstra"):
             self.costo, self.ruta = dijkstra(origen, destino)
-        else:
+        elif nombre.startswith("Floyd"):
             self.costo, self.ruta = floyd_warshall(origen, destino)
+        else:
+            self.costo, self.ruta, self.detalles = buscar_mejor_ruta_hibrida(
+                origen, destino
+            )
 
         self.algoritmo_usado = nombre
         if self.ruta:
@@ -209,12 +220,24 @@ class MapaRutasApp:
                 "1.0", "Elige origen, destino y algoritmo, luego pulsa 'Calcular ruta'."
             )
         else:
-            self.resultado.insert(
-                "1.0",
+            texto = (
                 f"Algoritmo: {self.algoritmo_usado}\n"
                 f"Costo: {self.costo:g} h\n"
-                f"Ruta: {' → '.join(self.ruta) if self.ruta else 'sin ruta'}\n",
+                f"Ruta: {' → '.join(self.ruta) if self.ruta else 'sin ruta'}\n"
             )
+            if self.detalles:
+                texto += (
+                    f"\nMergeSort → Dijkstra → Floyd ({self.detalles['tiempo_ms']:.3f} ms)\n"
+                    f"Grupos: {', '.join(self.detalles['grupos'])}\n"
+                    f"Nodos reducidos: {self.detalles['nodos']}\n"
+                    f"Sub-rutas ordenadas (top 3):\n"
+                )
+                for sub in self.detalles["sub_rutas"][:3]:
+                    texto += (
+                        f"  {sub['inicio']}→{sub['fin']} "
+                        f"({sub['costo']:g} h): {' → '.join(sub['camino'])}\n"
+                    )
+            self.resultado.insert("1.0", texto)
 
         self.pesos.delete("1.0", "end")
         for posicion, (peso, origen, destino) in enumerate(self.orden_arestas, 1):
@@ -397,6 +420,103 @@ def ejecutar_floyd_global():
     return dist, (fin - inicio)
 
 
+def _peso_directo(origen: str, destino: str) -> float:
+    for arista in RED_VIAL.get(origen, []):
+        if arista.destino == destino:
+            return arista.peso_efectivo
+    return float("inf")
+
+
+def buscar_mejor_ruta_hibrida(origen: str, destino: str):
+    inicio = time.perf_counter()
+    detalles: Dict[str, Any] = {
+        "grupos": [],
+        "sub_rutas": [],
+        "nodos": 0,
+        "tiempo_ms": 0.0,
+    }
+
+    if origen not in RED_VIAL or destino not in RED_VIAL:
+        return float("inf"), [], detalles
+
+    nodos = sorted(set(CIUDADES_PUENTE) | {origen, destino})
+    subrutas: List[Dict[str, Any]] = []
+    grupos_usados: List[str] = []
+    relevantes = set(CIUDADES_PUENTE) | {origen, destino}
+
+    for nombre_sector, ciudades in SECTORES.items():
+        subgrafo = obtener_subgrafo_sector(nombre_sector)
+        puntos = sorted(relevantes & set(ciudades) & set(subgrafo))
+        if len(puntos) < 2:
+            continue
+        grupos_usados.append(nombre_sector)
+
+        for indice, inicio_sub in enumerate(puntos):
+            for fin_sub in puntos[indice + 1:]:
+                costo, camino = dijkstra(inicio_sub, fin_sub, subgrafo)
+                if camino:
+                    subrutas.append(
+                        {
+                            "grupo": nombre_sector,
+                            "inicio": inicio_sub,
+                            "fin": fin_sub,
+                            "costo": costo,
+                            "camino": camino,
+                        }
+                    )
+
+    subrutas_ordenadas = mergesort_rutas(subrutas, criterio="costo")
+    mejores = {}
+    for sub in subrutas_ordenadas:
+        clave = (sub["inicio"], sub["fin"])
+        if clave not in mejores:
+            mejores[clave] = sub
+
+    aristas_globales = [
+        (inicio_sub, fin_sub, sub["costo"])
+        for (inicio_sub, fin_sub), sub in mejores.items()
+    ]
+    aristas_globales.extend(obtener_aristas_intersectoriales())
+
+    _, siguiente = floyd_warshall_matriz(nodos, aristas_globales)
+    camino_reducido = reconstruir_camino_floyd(origen, destino, siguiente)
+    if not camino_reducido:
+        detalles.update(
+            {
+                "grupos": grupos_usados,
+                "sub_rutas": subrutas_ordenadas,
+                "nodos": len(nodos),
+                "tiempo_ms": (time.perf_counter() - inicio) * 1000,
+            }
+        )
+        return float("inf"), [], detalles
+
+    ruta: List[str] = []
+    for actual, siguiente_nodo in zip(camino_reducido, camino_reducido[1:]):
+        if (actual, siguiente_nodo) in mejores:
+            tramo = mejores[(actual, siguiente_nodo)]["camino"]
+        elif (siguiente_nodo, actual) in mejores:
+            tramo = list(reversed(mejores[(siguiente_nodo, actual)]["camino"]))
+        else:
+            tramo = [actual, siguiente_nodo]
+
+        if not ruta:
+            ruta.extend(tramo)
+        else:
+            ruta.extend(tramo[1:])
+
+    costo_total = sum(_peso_directo(a, b) for a, b in zip(ruta, ruta[1:]))
+    detalles.update(
+        {
+            "grupos": grupos_usados,
+            "sub_rutas": subrutas_ordenadas,
+            "nodos": len(nodos),
+            "tiempo_ms": (time.perf_counter() - inicio) * 1000,
+        }
+    )
+    return round(costo_total, 2), ruta, detalles
+
+
 def main():
     print("=" * 60)
     print("  OPTIMIZADOR DE RUTAS TURÍSTICAS - SUR DEL PERÚ")
@@ -414,7 +534,20 @@ def main():
     destino = "Ollantaytambo"
     print(f"\nCalculando itinerario óptimo: [{origen}] -> [{destino}]...\n")
 
-    # 1. Ejecutar pipeline híbrido
+    mejor_costo, mejor_ruta, detalles = buscar_mejor_ruta_hibrida(origen, destino)
+    print("--- MEJOR RUTA HÍBRIDA (MergeSort + Dijkstra + Floyd) ---")
+    print(f" {' -> '.join(mejor_ruta)} | {mejor_costo:g} h")
+    print(
+        f" Grupos: {', '.join(detalles['grupos'])} | "
+        f"nodos reducidos: {detalles['nodos']}"
+    )
+    for sub in detalles["sub_rutas"][:3]:
+        print(
+            f"   sub-ruta {sub['inicio']}->{sub['fin']}: "
+            f"{' -> '.join(sub['camino'])} ({sub['costo']:g} h)"
+        )
+    print()
+
     rutas, t_hibrido = ejecutar_pipeline_hibrido(origen, destino)
 
     print(f"--- Top de Rutas Encontradas (Ordenadas por Mergesort) ---")
@@ -422,14 +555,14 @@ def main():
         print(f" Opción {i}: {' -> '.join(r['ruta'])}")
         print(f"   Costo ponderado (tiempo/estado): {r['costo']} hrs eq.")
 
-    # 2. Benchmarking contra Floyd-Warshall global
     _, t_global = ejecutar_floyd_global()
 
     print("\n" + "=" * 60)
     print("  COMPARATIVA DE COMPLEJIDAD Y TIEMPOS")
     print("=" * 60)
     print(f" Floyd-Warshall Global (V = {len(obtener_ciudades())}): {t_global * 1000:.4f} ms")
-    print(f" Híbrido (Divide + Dijkstra + Floyd reducido V={len(CIUDADES_PUENTE)}): {t_hibrido * 1000:.4f} ms")
+    print(f" Pipeline base (V={len(CIUDADES_PUENTE)}): {t_hibrido * 1000:.4f} ms")
+    print(f" Híbrido avanzado (Merge+Dijkstra+Floyd): {detalles['tiempo_ms']:.4f} ms")
     print("=" * 60)
 
 
