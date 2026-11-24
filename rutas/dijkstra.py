@@ -1,6 +1,5 @@
 """
 dijkstra.py - Algoritmo Goloso para rutas más cortas locales.
-Responsable: Integrante A
 
 Implementa el algoritmo de Dijkstra utilizando una cola de prioridad (heapq)
 para optimizar la búsqueda local de caminos mínimos dentro de cada sector.
