@@ -1,20 +1,24 @@
-
-# rutas/floyd_warshall.py
+"""
+floyd.py - Algoritmo de Floyd-Warshall (Programación Dinámica).
+Responsable: Integrante B
+"""
 
 from math import inf
+from typing import Dict, List, Tuple, Optional
 
-# (origin, destination, base travel time in hours, road-condition factor)
+# (origen, destino, tiempo_base_h, factor_estado)
 ARISTAS = [
-    ("Arequipa", "Mollendo", 2.0, 1.1),  # 2.2 hours
-    ("Arequipa", "Moquegua", 3.5, 1.0),  # 3.5 hours
-    ("Moquegua", "Ilo", 1.3, 1.0),       # 1.3 hours
+    ("Arequipa", "Mollendo", 2.0, 1.1),  # 2.2 horas
+    ("Arequipa", "Moquegua", 3.5, 1.0),  # 3.5 horas
+    ("Moquegua", "Ilo", 1.3, 1.0),       # 1.3 horas
 ]
 
 
-def _crear_grafo():
+def _crear_grafo(lista_aristas=None):
+    aristas_usar = lista_aristas if lista_aristas is not None else ARISTAS
     ciudades = sorted({
         ciudad
-        for origen, destino, _, _ in ARISTAS
+        for origen, destino, _, _ in aristas_usar
         for ciudad in (origen, destino)
     })
     indices = {ciudad: i for i, ciudad in enumerate(ciudades)}
@@ -24,15 +28,14 @@ def _crear_grafo():
     siguiente = [[None] * n for _ in range(n)]
 
     for i in range(n):
-        distancias[i][i] = 0
+        distancias[i][i] = 0.0
         siguiente[i][i] = i
 
-    for origen, destino, tiempo, factor in ARISTAS:
+    for origen, destino, tiempo, factor in aristas_usar:
         i = indices[origen]
         j = indices[destino]
-        costo = tiempo * factor
+        costo = round(tiempo * factor, 2)
 
-        # Treat each road as two-way. Remove this block if roads are one-way.
         if costo < distancias[i][j]:
             distancias[i][j] = costo
             siguiente[i][j] = j
@@ -41,7 +44,7 @@ def _crear_grafo():
             distancias[j][i] = costo
             siguiente[j][i] = i
 
-    # Floyd–Warshall: calculate shortest costs and retain next hops.
+    # Floyd–Warshall: O(V^3)
     for k in range(n):
         for i in range(n):
             for j in range(n):
@@ -53,12 +56,12 @@ def _crear_grafo():
     return ciudades, indices, distancias, siguiente
 
 
-def floyd_warshall(origen, destino):
+def floyd_warshall(origen, destino, lista_aristas=None):
     """
-    Return (cost, route) for the shortest route between two cities.
-    Return (inf, []) if no route exists.
+    Retorna (costo, ruta) para el camino más corto entre dos ciudades.
+    Retorna (inf, []) si no existe ruta.
     """
-    ciudades, indices, distancias, siguiente = _crear_grafo()
+    ciudades, indices, distancias, siguiente = _crear_grafo(lista_aristas)
 
     if origen not in indices or destino not in indices:
         return inf, []
@@ -76,4 +79,54 @@ def floyd_warshall(origen, destino):
         actual = siguiente[actual][j]
         ruta.append(ciudades[actual])
 
-    return round(distancias[i][j], 10), ruta
+    return round(distancias[i][j], 2), ruta
+
+
+def floyd_warshall_matriz(nodos: List[str], aristas: List[Tuple]):
+    """
+    Calcula la matriz completa de distancias mínimas y transiciones.
+    Retorna: (dist_dict, next_dict)
+    """
+    dist: Dict[str, Dict[str, float]] = {u: {v: float('inf') for v in nodos} for u in nodos}
+    next_node: Dict[str, Dict[str, Optional[str]]] = {u: {v: None for v in nodos} for u in nodos}
+
+    for u in nodos:
+        dist[u][u] = 0.0
+        next_node[u][u] = u
+
+    for item in aristas:
+        if len(item) == 4:
+            u, v, tiempo, factor = item
+            peso = round(tiempo * factor, 2)
+        else:
+            u, v, peso = item
+
+        if u in dist and v in dist[u] and peso < dist[u][v]:
+            dist[u][v] = peso
+            next_node[u][v] = v
+        if v in dist and u in dist[v] and peso < dist[v][u]:
+            dist[v][u] = peso
+            next_node[v][u] = u
+
+    for k in nodos:
+        for i in nodos:
+            for j in nodos:
+                if dist[i][k] + dist[k][j] < dist[i][j]:
+                    dist[i][j] = dist[i][k] + dist[k][j]
+                    next_node[i][j] = next_node[i][k]
+
+    return dist, next_node
+
+
+def reconstruir_camino_floyd(u: str, v: str, next_node: Dict[str, Dict[str, Optional[str]]]) -> List[str]:
+    """Reconstruye el camino entre u y v."""
+    if u not in next_node or v not in next_node[u] or next_node[u][v] is None:
+        return []
+    camino = [u]
+    actual = u
+    while actual != v:
+        actual = next_node[actual][v]
+        if actual is None:
+            return []
+        camino.append(actual)
+    return camino

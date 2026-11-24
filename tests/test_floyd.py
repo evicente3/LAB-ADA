@@ -1,4 +1,4 @@
-from rutas.floyd_warshall import floyd_warshall
+from rutas.floyd import floyd_warshall
 
 costo, ruta = floyd_warshall("Arequipa", "Ilo")
 assert costo == 4.8
