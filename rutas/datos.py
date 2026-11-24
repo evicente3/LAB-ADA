@@ -1,7 +1,5 @@
 """
 datos.py - Definición de la red vial turística del Sur del Perú.
-Responsable: Integrante A
-
 Modela las ciudades principales, nodos intermedios y carreteras que conectan
 Arequipa, Puno, Cusco y Moquegua, considerando distancia (km), tiempo base (h)
 y factor de estado de la vía (asfaltado, afirmado, en mantenimiento).
